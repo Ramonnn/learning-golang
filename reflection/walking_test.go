@@ -8,17 +8,34 @@ import (
 func walk(x interface{}, fn func(input string)) {
 	val := getValue(x)
 
+	walkValue := func(value reflect.Value) {
+		walk(value.Interface(), fn)
+	}
+
 	switch val.Kind() {
-	case reflect.Struct:
-		for i := 0; i < val.NumField(); i++ {
-			walk(val.Field(i).Interface(), fn)
-		}
-	case reflect.Slice:
-		for i := 0; i < val.Len(); i++ {
-			walk(val.Index(i).Interface(), fn)
-		}
 	case reflect.String:
 		fn(val.String())
+	case reflect.Struct:
+		for i := 0; i < val.NumField(); i++ {
+			walkValue(val.Field(i))
+		}
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < val.NumField(); i++ {
+			walkValue(val.Index(i))
+		}
+	case reflect.Map:
+		for _, key := range val.MapKeys() {
+			walkValue(val.MapIndex(key))
+		}
+	case reflect.Chan:
+		for v, ok := val.Recv(); ok; v, ok = val.Recv() {
+			walkValue(v)
+		}
+	case reflect.Func:
+		valFnResult := val.Call(nil)
+		for _, res := range valFnResult {
+			walkValue(res)
+		}
 	}
 }
 
@@ -96,6 +113,22 @@ func TestWalk(t *testing.T) {
 			},
 			[]string{"London", "Reykjavik"},
 		},
+		{
+			"arrays",
+			[2]Profile{
+				{33, "London"},
+				{34, "Reykjavik"},
+			},
+			[]string{"London", "Reykjvakik"},
+		},
+		{
+			"maps",
+			map[string]string{
+				"Cow":   "Moo",
+				"Sheep": "Baa",
+			},
+			[]string{"Moo", "Baa"},
+		},
 	}
 
 	for _, test := range cases {
@@ -104,9 +137,75 @@ func TestWalk(t *testing.T) {
 			walk(test.Input, func(input string) {
 				got = append(got, input)
 			})
+
 			if !reflect.DeepEqual(got, test.ExpectedCalls) {
 				t.Errorf("got %v, want %v", got, test.ExpectedCalls)
 			}
 		})
+	}
+
+	t.Run("with maps", func(t *testing.T) {
+		aMap := map[string]string{
+			"Cow":   "Moo",
+			"Sheep": "Baa",
+		}
+
+		var got []string
+		walk(aMap, func(input string) {
+			got = append(got, input)
+		})
+		assertContains(t, got, "Moo")
+		assertContains(t, got, "Baa")
+	})
+	t.Run("with channels", func(t *testing.T) {
+		aChannel := make(chan Profile)
+
+		go func() {
+			aChannel <- Profile{33, "Berlin"}
+			aChannel <- Profile{34, "Katowice"}
+			close(aChannel)
+		}()
+
+		var got []string
+		want := []string{"Berlin", "Katowice"}
+
+		walk(aChannel, func(input string) {
+			got = append(got, input)
+		})
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %v, want %v", got, want)
+		}
+
+	})
+
+	t.Run("with function", func(t *testing.T) {
+		aFunction := func() (Profile, Profile) {
+			return Profile{33, "Berlin"}, Profile{34, "Katowice"}
+		}
+
+		var got []string
+		want := []string{"Berlin", "Katowice"}
+
+		walk(aFunction, func(input string) {
+			got = append(got, input)
+		})
+
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("got %v, want %v:", got, want)
+		}
+	})
+
+}
+
+func assertContains(t testing.TB, haystack []string, needle string) {
+	t.Helper()
+	contains := false
+	for _, x := range haystack {
+		if x == needle {
+			contains = true
+		}
+	}
+	if !contains {
+		t.Errorf("expected %v to contain %q but it didn't", haystack, needle)
 	}
 }
